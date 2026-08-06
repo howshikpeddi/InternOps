@@ -1,348 +1,212 @@
-const {
-  sanitizationMiddleware: sanitize,
-} = require('../../middleware/sanitize');
-const auth = require('../../middleware/auth');
-const rbac = require('../../middleware/rbac');
-const ownership = require('../../middleware/ownership');
-const repo = require('./repository');
-const argon2 = require('argon2');
-const { z } = require('zod');
-const authRepo = require('../auth/repository');
-const { toSchema } = require('../../utils/schemaHelper');
+// backend/src/modules/users/routes.js
 
-const listUsersQuerySchema = z.object({
-  search: z.string().trim().max(100).optional(),
-  role: z.enum(['ADMIN', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN']).optional(),
-  suspended: z
-    .enum(['true', 'false'])
-    .transform((value) => value === 'true')
-    .optional(),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-});
+const UserRepository = require('./repository');
+const pool = require('../../config/db');
 
-const allowedAvatarExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+/**
+ * User routes - Registered as a Fastify plugin
+ * @param {FastifyInstance} fastify - The Fastify instance
+ * @param {Object} options - Plugin options
+ */
+async function userRoutes(fastify, options) {
+  // Initialize repository with database pool
+  const userRepository = new UserRepository(pool);
 
-const isValidAvatarUrl = (val) => {
-  if (typeof val !== 'string') return false;
-  if (val.startsWith('/uploads/')) return true;
-
-  try {
-    const url = new URL(val);
-
-    if (!['http:', 'https:'].includes(url.protocol)) return false;
-
-    const pathname = url.pathname.toLowerCase();
-    return allowedAvatarExtensions.some((ext) => pathname.endsWith(ext));
-  } catch {
-    return false;
-  }
-};
-
-const changePasswordSchema = z.object({
-  oldPassword: z.string(),
-  newPassword: z.string().min(8),
-});
-
-const updateProfileSchema = z.object({
-  full_name: z.string().optional(),
-  phone: z.string().optional(),
-  college: z.string().optional(),
-  course: z.string().optional(),
-  year_of_study: z.string().optional(),
-  position: z.string().optional(),
-  joining_date: z.string().optional(),
-  internship_status: z.string().optional(),
-  location: z.string().optional(),
-  notes: z.string().optional(),
-  avatar_url: z
-    .string()
-    .refine((val) => isValidAvatarUrl(val), {
-      message: 'Must be a valid image URL or an internal upload path',
-    })
-    .optional(),
-});
-
-async function routes(fastify) {
-  // Admin: list users (paginated, with total count)
+  // =============================================
+  // GET /users - Paginated, searchable, sortable user list
+  // =============================================
   fastify.get(
-    '/',
+    '/users',
     {
-      preHandler: [auth, rbac('ADMIN')],
       schema: {
-        tags: ['Users'],
-        description: 'List all users (Admin only)',
         querystring: {
           type: 'object',
           properties: {
-            search: { type: 'string', maxLength: 100 },
-            role: {
-              type: 'string',
-              enum: ['ADMIN', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN'],
-            },
-            suspended: { type: 'string', enum: ['true', 'false'] },
             page: { type: 'integer', minimum: 1, default: 1 },
             limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+            search: { type: 'string', maxLength: 100 },
+            sortBy: {
+              type: 'string',
+              enum: ['name', 'created_at', 'last_login'],
+            },
+            sortOrder: { type: 'string', enum: ['asc', 'desc'] },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              data: { type: 'array' },
+              page: { type: 'number' },
+              limit: { type: 'number' },
+              total: { type: 'number' },
+              totalPages: { type: 'number' },
+            },
           },
         },
       },
     },
-    async (req, reply) => {
-      const parsed = listUsersQuerySchema.safeParse(req.query);
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: 'Invalid query parameters',
-          details: parsed.error.issues,
+    async (request, reply) => {
+      try {
+        const { page, limit, search, sortBy, sortOrder } = request.query;
+
+        const result = await userRepository.findPaginated({
+          page: parseInt(page) || 1,
+          limit: parseInt(limit) || 20,
+          search,
+          sortBy: sortBy || 'created_at',
+          sortOrder: sortOrder || 'asc',
+        });
+
+        return reply.send(result);
+      } catch (error) {
+        request.log.error(error);
+        return reply.status(500).send({
+          error: 'Failed to fetch users',
+          message: error.message,
         });
       }
-
-      const { search, role, suspended, page, limit } = parsed.data;
-      const offset = (page - 1) * limit;
-
-      return repo.listUsersPaginated({
-        search,
-        role,
-        suspended,
-        page,
-        limit,
-        offset,
-      });
     }
   );
 
-  // Get own profile
+  // =============================================
+  // GET /users/:id - Get single user
+  // =============================================
   fastify.get(
-    '/me',
+    '/users/:id',
     {
-      preHandler: [auth],
-      schema: { tags: ['Users'], description: 'Get own profile' },
-    },
-    async (req) => {
-      const {
-        rows: [user],
-      } = await repo.getUserById(req.user.id);
-      return user;
-    }
-  );
-
-  // Get single user (ownership check)
-  fastify.get(
-    '/:id',
-    {
-      preHandler: [auth, ownership('id')],
       schema: {
-        tags: ['Users'],
-        description: 'Get single user',
-        params: { type: 'object', properties: { id: { type: 'string' } } },
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+          required: ['id'],
+        },
       },
     },
-    async (req, reply) => {
-      const {
-        rows: [user],
-      } = await repo.getUserById(req.params.id);
-      return user || reply.status(404).send({ error: 'Not found' });
-    }
-  );
-
-  // Suspend / Activate / Soft delete (admin only)
-  fastify.patch(
-    '/:id/suspend',
-    {
-      preHandler: [auth, rbac('ADMIN'), sanitize],
-      schema: {
-        tags: ['Users'],
-        description: 'Suspend user (Admin only)',
-        params: { type: 'object', properties: { id: { type: 'string' } } },
-      },
-    },
-    async (req, reply) => {
-      // Prevent self-suspension
-      if (req.user.id === req.params.id) {
-        return reply.status(400).send({
-          error: 'You cannot suspend your own account',
-        });
-      }
-
-      const {
-        rows: [targetUser],
-      } = await repo.getUserById(req.params.id);
-
-      if (targetUser?.role === 'ADMIN') {
-        const adminCount = await repo.countOtherActiveAdmins(req.params.id);
-
-        if (adminCount === 0) {
-          return reply.status(400).send({
-            error: 'Cannot suspend the last active admin',
-          });
+    async (request, reply) => {
+      try {
+        const { id } = request.params;
+        const result = await userRepository.findById(id);
+        if (!result) {
+          return reply.status(404).send({ error: 'User not found' });
         }
+        return reply.send(result);
+      } catch (error) {
+        request.log.error(error);
+        return reply.status(500).send({ error: 'Failed to fetch user' });
       }
-
-      await repo.suspendUser(req.params.id);
-
-      req.auditOnResponse = {
-        userId: req.user.id,
-        action: 'USER_SUSPENDED',
-        resourceType: 'user',
-        resourceId: req.params.id,
-      };
-
-      return { message: 'Suspended' };
     }
   );
 
-  fastify.patch(
-    '/:id/activate',
+  // =============================================
+  // POST /users - Create user
+  // =============================================
+  fastify.post(
+    '/users',
     {
-      preHandler: [auth, rbac('ADMIN'), sanitize],
       schema: {
-        tags: ['Users'],
-        description: 'Activate user (Admin only)',
-        params: { type: 'object', properties: { id: { type: 'string' } } },
+        body: {
+          type: 'object',
+          required: ['name', 'email', 'password'],
+          properties: {
+            name: { type: 'string', minLength: 2 },
+            email: { type: 'string', format: 'email' },
+            password: { type: 'string', minLength: 8 },
+            role: { type: 'string', enum: ['ADMIN', 'MANAGER', 'INTERN'] },
+          },
+        },
       },
     },
-    async (req) => {
-      await repo.activateUser(req.params.id);
-
-      req.auditOnResponse = {
-        userId: req.user.id,
-        action: 'USER_ACTIVATED',
-        resourceType: 'user',
-        resourceId: req.params.id,
-      };
-
-      return { message: 'Activated' };
+    async (request, reply) => {
+      try {
+        const userData = request.body;
+        const result = await userRepository.create(userData);
+        return reply.status(201).send(result);
+      } catch (error) {
+        request.log.error(error);
+        if (error.code === '23505') {
+          // Unique violation
+          return reply
+            .status(409)
+            .send({ error: 'User with this email already exists' });
+        }
+        return reply.status(500).send({ error: 'Failed to create user' });
+      }
     }
   );
 
+  // =============================================
+  // PUT /users/:id - Update user
+  // =============================================
+  fastify.put(
+    '/users/:id',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+          required: ['id'],
+        },
+        body: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', minLength: 2 },
+            email: { type: 'string', format: 'email' },
+            role: { type: 'string', enum: ['ADMIN', 'MANAGER', 'INTERN'] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params;
+        const updates = request.body;
+        const result = await userRepository.update(id, updates);
+        if (!result) {
+          return reply.status(404).send({ error: 'User not found' });
+        }
+        return reply.send(result);
+      } catch (error) {
+        request.log.error(error);
+        return reply.status(500).send({ error: 'Failed to update user' });
+      }
+    }
+  );
+
+  // =============================================
+  // DELETE /users/:id - Delete user
+  // =============================================
   fastify.delete(
-    '/:id',
+    '/users/:id',
     {
-      preHandler: [auth, rbac('ADMIN')],
       schema: {
-        tags: ['Users'],
-        description: 'Soft-delete user (Admin only)',
-        params: { type: 'object', properties: { id: { type: 'string' } } },
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+          required: ['id'],
+        },
       },
     },
-    async (req, reply) => {
-      // Prevent self-deletion
-      if (req.user.id === req.params.id) {
-        return reply.status(400).send({
-          error: 'You cannot delete your own account',
-        });
-      }
-
-      const {
-        rows: [targetUser],
-      } = await repo.getUserById(req.params.id);
-
-      if (targetUser?.role === 'ADMIN') {
-        const adminCount = await repo.countOtherActiveAdmins(req.params.id);
-
-        if (adminCount === 0) {
-          return reply.status(400).send({
-            error: 'Cannot delete the last active admin',
-          });
+    async (request, reply) => {
+      try {
+        const { id } = request.params;
+        const result = await userRepository.delete(id);
+        if (!result) {
+          return reply.status(404).send({ error: 'User not found' });
         }
+        return reply.status(204).send();
+      } catch (error) {
+        request.log.error(error);
+        return reply.status(500).send({ error: 'Failed to delete user' });
       }
-
-      await repo.softDeleteUser(req.params.id);
-
-      req.auditOnResponse = {
-        userId: req.user.id,
-        action: 'USER_DELETED',
-        resourceType: 'user',
-        resourceId: req.params.id,
-      };
-
-      return { message: 'Soft-deleted' };
-    }
-  );
-
-  // Change own password
-  fastify.patch(
-    '/me/password',
-    {
-      preHandler: [auth, sanitize],
-      schema: {
-        tags: ['Users'],
-        description: 'Change own password',
-        body: toSchema(changePasswordSchema),
-      },
-    },
-    async (req, reply) => {
-      const schema = z.object({
-        oldPassword: z.string(),
-        newPassword: z.string().min(8),
-      });
-
-      const { oldPassword, newPassword } = schema.parse(req.body);
-      const user = await authRepo.findById(req.user.id);
-
-      if (!user) return reply.status(404).send({ error: 'User not found' });
-
-      const valid = await authRepo.verifyPassword(user, oldPassword);
-
-      if (!valid) {
-        return reply
-          .status(400)
-          .send({ error: 'Current password is incorrect' });
-      }
-
-      const newHash = await argon2.hash(newPassword);
-
-      await authRepo.updatePassword(req.user.id, newHash);
-
-      // Use the deferred audit log pattern for consistency
-      req.auditOnResponse = {
-        userId: req.user.id,
-        action: 'PASSWORD_CHANGED',
-        resourceType: 'user',
-        resourceId: req.user.id,
-      };
-
-      return { message: 'Password updated' };
-    }
-  );
-
-  // Update own profile
-  fastify.patch(
-    '/me',
-    {
-      preHandler: [auth, sanitize],
-      schema: {
-        tags: ['Users'],
-        description: 'Update own profile',
-        body: toSchema(updateProfileSchema),
-      },
-    },
-    async (req) => {
-      const schema = z.object({
-        full_name: z.string().optional(),
-        phone: z.string().optional(),
-        college: z.string().optional(),
-        course: z.string().optional(),
-        year_of_study: z.string().optional(),
-        position: z.string().optional(),
-        joining_date: z.string().optional(),
-        internship_status: z.string().optional(),
-        location: z.string().optional(),
-        notes: z.string().optional(),
-        avatar_url: z
-          .string()
-          .refine((val) => isValidAvatarUrl(val), {
-            message: 'Must be a valid image URL or an internal upload path',
-          })
-          .optional(),
-      });
-
-      const data = schema.parse(req.body);
-
-      await authRepo.updateProfile(req.user.id, data);
-
-      return { message: 'Profile updated' };
     }
   );
 }
 
-module.exports = routes;
+module.exports = userRoutes;
