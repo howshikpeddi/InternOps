@@ -19,7 +19,10 @@ const listUsersQuerySchema = z.object({
     .optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
-  sortBy: z.enum(['name', 'created_at', 'last_login']).optional().default('created_at'),
+  sortBy: z
+    .enum(['name', 'created_at', 'last_login'])
+    .optional()
+    .default('created_at'),
   sortOrder: z.enum(['asc', 'desc']).optional().default('asc'),
 });
 
