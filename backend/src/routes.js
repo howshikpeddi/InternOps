@@ -20,7 +20,34 @@ async function routes(fastify, options) {
   // fastify.register(teamRoutes);
   // fastify.register(taskRoutes);
   // fastify.register(attendanceRoutes);
-  // ... other route registrations
+
+  fastify.register(require('./modules/sessions/routes'), {
+    prefix: '/sessions',
+  });
+  fastify.register(require('./modules/reports/routes'), {
+    prefix: '/reports',
+  });
+  fastify.register(require('./modules/reports/export'), {
+    prefix: '/reports/export',
+  });
+  fastify.register(require('./modules/ai/routes'), { prefix: '/ai' });
+  fastify.register(require('./modules/onboarding/routes'), {
+    prefix: '/onboarding',
+  });
+  fastify.register(require('./modules/uptoskills/routes'), {
+    prefix: '/uptoskills',
+  });
+  fastify.register(noticesRoutes);
+  fastify.register(require('./modules/certificates/routes'), {
+    prefix: '/certificates',
+  });
+  fastify.register(require('./modules/github-sync/index'), {
+    prefix: '/github',
+  });
+
+  // Public certificate verification (no auth)
+  const { verifyCertificate } = require('./modules/certificates/verify');
+  verifyCertificate(fastify);
 
   // =============================================
   // ROOT ROUTES

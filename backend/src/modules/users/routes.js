@@ -1,63 +1,83 @@
-// backend/src/modules/users/routes.js
+const {
+  sanitizationMiddleware: sanitize,
+} = require('../../middleware/sanitize');
+const auth = require('../../middleware/auth');
+const rbac = require('../../middleware/rbac');
+const ownership = require('../../middleware/ownership');
+const repo = require('./repository');
+const argon2 = require('argon2');
+const { z } = require('zod');
+const authRepo = require('../auth/repository');
+const { toSchema } = require('../../utils/schemaHelper');
 
-const UserRepository = require('./repository');
-const pool = require('../../config/db');
+const listUsersQuerySchema = z.object({
+  search: z.string().trim().max(100).optional(),
+  role: z.enum(['ADMIN', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN']).optional(),
+  suspended: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  sortBy: z.enum(['name', 'created_at', 'last_login']).optional().default('created_at'),
+  sortOrder: z.enum(['asc', 'desc']).optional().default('asc'),
+});
 
-/**
- * User routes - Registered as a Fastify plugin
- * @param {FastifyInstance} fastify - The Fastify instance
- * @param {Object} options - Plugin options
- */
-async function userRoutes(fastify, options) {
-  // Initialize repository with database pool
-  const userRepository = new UserRepository(pool);
+const allowedAvatarExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
 
-  // =============================================
-  // GET /users - Paginated, searchable, sortable user list
-  // =============================================
+const isValidAvatarUrl = (val) => {
+  if (typeof val !== 'string') return false;
+  if (val.startsWith('/uploads/')) return true;
+
+  try {
+    const url = new URL(val);
+
+    if (!['http:', 'https:'].includes(url.protocol)) return false;
+
+    const pathname = url.pathname.toLowerCase();
+    return allowedAvatarExtensions.some((ext) => pathname.endsWith(ext));
+  } catch {
+    return false;
+  }
+};
+
+const changePasswordSchema = z.object({
+  oldPassword: z.string(),
+  newPassword: z.string().min(8),
+});
+
+const updateProfileSchema = z.object({
+  full_name: z.string().optional(),
+  phone: z.string().optional(),
+  college: z.string().optional(),
+  course: z.string().optional(),
+  year_of_study: z.string().optional(),
+  position: z.string().optional(),
+  joining_date: z.string().optional(),
+  internship_status: z.string().optional(),
+  location: z.string().optional(),
+  notes: z.string().optional(),
+  avatar_url: z
+    .string()
+    .url()
+    .regex(/^https?:\/\/.+\.(jpg|jpeg|png|gif|webp)$/i)
+    .optional(),
+});
+
+async function routes(fastify) {
+  // Admin: list users (paginated, searchable, sortable with total count)
   fastify.get(
     '/users',
     {
       schema: {
-        querystring: {
-          type: 'object',
-          properties: {
-            page: { type: 'integer', minimum: 1, default: 1 },
-            limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
-            search: { type: 'string', maxLength: 100 },
-            sortBy: {
-              type: 'string',
-              enum: ['name', 'created_at', 'last_login'],
-            },
-            sortOrder: { type: 'string', enum: ['asc', 'desc'] },
-          },
-        },
-        response: {
-          200: {
-            type: 'object',
-            properties: {
-              data: { type: 'array' },
-              page: { type: 'number' },
-              limit: { type: 'number' },
-              total: { type: 'number' },
-              totalPages: { type: 'number' },
-            },
-          },
-        },
+        querystring: toSchema(listUsersQuerySchema, 'querystring'),
       },
+      preHandler: [auth, rbac(['ADMIN', 'SENIOR_TL', 'TL'])],
     },
     async (request, reply) => {
       try {
-        const { page, limit, search, sortBy, sortOrder } = request.query;
-
-        const result = await userRepository.findPaginated({
-          page: parseInt(page) || 1,
-          limit: parseInt(limit) || 20,
-          search,
-          sortBy: sortBy || 'created_at',
-          sortOrder: sortOrder || 'asc',
-        });
-
+        const query = listUsersQuerySchema.parse(request.query);
+        const result = await repo.findPaginated(query);
         return reply.send(result);
       } catch (error) {
         request.log.error(error);
@@ -69,26 +89,16 @@ async function userRoutes(fastify, options) {
     }
   );
 
-  // =============================================
   // GET /users/:id - Get single user
-  // =============================================
   fastify.get(
     '/users/:id',
     {
-      schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-          },
-          required: ['id'],
-        },
-      },
+      preHandler: [auth],
     },
     async (request, reply) => {
       try {
         const { id } = request.params;
-        const result = await userRepository.findById(id);
+        const result = await repo.findById(id);
         if (!result) {
           return reply.status(404).send({ error: 'User not found' });
         }
@@ -100,34 +110,20 @@ async function userRoutes(fastify, options) {
     }
   );
 
-  // =============================================
   // POST /users - Create user
-  // =============================================
   fastify.post(
     '/users',
     {
-      schema: {
-        body: {
-          type: 'object',
-          required: ['name', 'email', 'password'],
-          properties: {
-            name: { type: 'string', minLength: 2 },
-            email: { type: 'string', format: 'email' },
-            password: { type: 'string', minLength: 8 },
-            role: { type: 'string', enum: ['ADMIN', 'MANAGER', 'INTERN'] },
-          },
-        },
-      },
+      preHandler: [auth, rbac(['ADMIN']), sanitize],
     },
     async (request, reply) => {
       try {
         const userData = request.body;
-        const result = await userRepository.create(userData);
+        const result = await repo.create(userData);
         return reply.status(201).send(result);
       } catch (error) {
         request.log.error(error);
         if (error.code === '23505') {
-          // Unique violation
           return reply
             .status(409)
             .send({ error: 'User with this email already exists' });
@@ -137,35 +133,17 @@ async function userRoutes(fastify, options) {
     }
   );
 
-  // =============================================
   // PUT /users/:id - Update user
-  // =============================================
   fastify.put(
     '/users/:id',
     {
-      schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-          },
-          required: ['id'],
-        },
-        body: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', minLength: 2 },
-            email: { type: 'string', format: 'email' },
-            role: { type: 'string', enum: ['ADMIN', 'MANAGER', 'INTERN'] },
-          },
-        },
-      },
+      preHandler: [auth, ownership, sanitize],
     },
     async (request, reply) => {
       try {
         const { id } = request.params;
         const updates = request.body;
-        const result = await userRepository.update(id, updates);
+        const result = await repo.update(id, updates);
         if (!result) {
           return reply.status(404).send({ error: 'User not found' });
         }
@@ -177,26 +155,16 @@ async function userRoutes(fastify, options) {
     }
   );
 
-  // =============================================
   // DELETE /users/:id - Delete user
-  // =============================================
   fastify.delete(
     '/users/:id',
     {
-      schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-          },
-          required: ['id'],
-        },
-      },
+      preHandler: [auth, rbac(['ADMIN'])],
     },
     async (request, reply) => {
       try {
         const { id } = request.params;
-        const result = await userRepository.delete(id);
+        const result = await repo.delete(id);
         if (!result) {
           return reply.status(404).send({ error: 'User not found' });
         }
@@ -209,4 +177,4 @@ async function userRoutes(fastify, options) {
   );
 }
 
-module.exports = userRoutes;
+module.exports = routes;
