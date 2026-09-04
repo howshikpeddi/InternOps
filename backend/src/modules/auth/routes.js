@@ -26,7 +26,6 @@ async function routes(fastify) {
     '/register',
     {
       preHandler: [auth, rbac('ADMIN', 'SENIOR_TL', 'TL', 'HR'), sanitize],
-      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL', 'TL'), sanitize],
       schema: {
         tags: ['Authentication'],
         description:
