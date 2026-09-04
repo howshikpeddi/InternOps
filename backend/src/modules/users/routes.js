@@ -67,7 +67,7 @@ const listUsersQuerySchema = z.object({
   search: z.string().trim().max(100).optional(),
   role: z
     .enum(['ADMIN', 'MANAGEMENT', 'HR', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN'])
-  role: z.enum(['ADMIN', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN']).optional(),
+    .optional(),
   department_id: z
     .union([z.string().uuid(), z.literal('unassigned')])
     .optional(),
@@ -148,8 +148,7 @@ async function routes(fastify) {
   fastify.get(
     '/',
     {
-      preHandler: [auth, rbac('ADMIN', 'HR')],
-      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL', 'TL')],
+      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL', 'TL', 'HR')],
       schema: {
         tags: ['Users'],
         description: 'List users visible to the requester',
@@ -404,8 +403,7 @@ async function routes(fastify) {
   fastify.patch(
     '/:id',
     {
-      preHandler: [auth, rbac('ADMIN', 'HR'), sanitize],
-      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL', 'TL'), sanitize],
+      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL', 'TL', 'HR'), sanitize],
       schema: {
         tags: ['Users'],
         description: 'Update a managed user',
