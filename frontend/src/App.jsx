@@ -263,7 +263,7 @@ export default function App() {
             <Route
               path="hr"
               element={
-                <RoleGuard allowedRoles={['ADMIN']}>
+                <RoleGuard allowedRoles={['ADMIN', 'HR']}>
                   <HR />
                 </RoleGuard>
               }
@@ -279,7 +279,9 @@ export default function App() {
             <Route
               path="reports"
               element={
-                <RoleGuard allowedRoles={['ADMIN', 'SENIOR_TL']}>
+                <RoleGuard
+                  allowedRoles={['ADMIN', 'MANAGEMENT', 'HR', 'SENIOR_TL']}
+                >
                   <Reports />
                 </RoleGuard>
               }
@@ -303,7 +305,7 @@ export default function App() {
             <Route
               path="analytics"
               element={
-                <RoleGuard allowedRoles={['ADMIN', 'SENIOR_TL']}>
+                <RoleGuard allowedRoles={['ADMIN', 'MANAGEMENT', 'SENIOR_TL']}>
                   <Analytics />
                 </RoleGuard>
               }

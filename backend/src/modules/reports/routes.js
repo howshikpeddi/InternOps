@@ -58,7 +58,7 @@ async function routes(fastify) {
   fastify.get(
     '/attendance-summary',
     {
-      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL')],
+      preHandler: [auth, rbac('read:reports')],
       schema: {
         tags: ['Reports'],
         description: 'Attendance summary by role for date range',
@@ -90,7 +90,7 @@ async function routes(fastify) {
   fastify.get(
     '/task-completion',
     {
-      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL')],
+      preHandler: [auth, rbac('read:reports')],
       schema: { tags: ['Reports'], description: 'Task completion statistics' },
     },
     async () => {

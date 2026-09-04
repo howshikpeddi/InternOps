@@ -44,51 +44,62 @@ import { ROLE_LABEL } from '../constants/roles';
 import FloatingChatbot from '../components/FloatingChatbot';
 
 const MANAGER_ROLES = ['ADMIN', 'SENIOR_TL', 'TL', 'CAPTAIN'];
+const REPORT_ROLES = ['ADMIN', 'MANAGEMENT', 'HR', 'SENIOR_TL'];
 const ADMIN_AND_SENIOR_TL_ROLES = ['ADMIN', 'SENIOR_TL'];
+const ANALYTICS_ROLES = ['ADMIN', 'MANAGEMENT', 'SENIOR_TL'];
 const ADMIN_ONLY_ROLES = ['ADMIN'];
 
 const nav = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+
   {
     path: '/team',
     label: 'My Team',
     icon: Users,
     allowedRoles: MANAGER_ROLES,
   },
+
   {
     path: '/hr',
     label: 'HR',
     icon: BriefcaseBusiness,
-    allowedRoles: ADMIN_ONLY_ROLES,
+    allowedRoles: ['ADMIN', 'HR'],
   },
+
   {
     path: '/attendance',
     label: 'Attendance',
     icon: CalendarCheck,
     excludedRoles: ADMIN_ONLY_ROLES,
   },
+
   {
     path: '/ratings',
     label: 'Ratings',
     icon: Star,
-    excludedRoles: ADMIN_ONLY_ROLES,
+    excludedRoles: ['ADMIN', 'MANAGEMENT'],
   },
+
   { path: '/tasks', label: 'Tasks', icon: Target },
+
   {
     path: '/meetings',
     label: 'Meetings',
     icon: Video,
-    excludedRoles: ADMIN_ONLY_ROLES,
+    excludedRoles: ['ADMIN', 'MANAGEMENT'],
   },
+
   { path: '/notifications', label: 'Notifications', icon: Bell },
   { path: '/profile', label: 'Profile', icon: User },
   { path: '/sessions', label: 'Sessions', icon: Shield },
+
   {
     path: '/reports',
     label: 'Reports',
     icon: FileText,
-    allowedRoles: ADMIN_AND_SENIOR_TL_ROLES,
+    allowedRoles: REPORT_ROLES,
   },
+
   {
     path: '/report-templates',
     label: 'Report Templates',
@@ -99,15 +110,17 @@ const nav = [
     path: '/analytics',
     label: 'Analytics',
     icon: BarChart2,
-    allowedRoles: ADMIN_AND_SENIOR_TL_ROLES,
+    allowedRoles: ANALYTICS_ROLES,
     featureFlag: 'ADVANCED_ANALYTICS',
   },
+
   {
     path: '/exports',
     label: 'Exports',
     icon: Download,
     allowedRoles: ADMIN_AND_SENIOR_TL_ROLES,
   },
+
   {
     path: '/notices',
     label: 'Notice Board',

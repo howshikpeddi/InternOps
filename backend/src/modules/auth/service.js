@@ -26,16 +26,20 @@ const { getRedisClient } = require('../../config/redis');
 const emailService = require('../../services/email');
 
 async function register(data, creator) {
-  // Default to the creator (admin) as manager if none was explicitly chosen,
-  // so users created via Admin > Users also show up in team/hierarchy views.
+  const nonHierarchyRoles = ['HR', 'MANAGEMENT'];
+
   const managerId =
-    data.role === 'ADMIN'
-      ? data.managerId || null
-      : data.managerId || creator.id;
+    data.managerId ||
+    (data.role === 'ADMIN' ||
+    nonHierarchyRoles.includes(data.role) ||
+    creator.role === 'HR'
+      ? null
+      : creator.id);
 
   if (managerId) {
     const manager = await repo.findByIdRaw(managerId);
     if (!manager) throw new Error('Manager not found');
+
     if (!isValidStep(manager.role, data.role)) {
       throw new Error(
         `Invalid hierarchy: ${manager.role} cannot manage ${data.role}`

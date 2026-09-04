@@ -13,7 +13,9 @@ const { isValidStep } = require('../../utils/hierarchy');
 
 const listUsersQuerySchema = z.object({
   search: z.string().trim().max(100).optional(),
-  role: z.enum(['ADMIN', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN']).optional(),
+  role: z
+    .enum(['ADMIN', 'MANAGEMENT', 'HR', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN'])
+    .optional(),
   suspended: z
     .enum(['true', 'false'])
     .transform((value) => value === 'true')
@@ -91,7 +93,7 @@ async function routes(fastify) {
   fastify.get(
     '/',
     {
-      preHandler: [auth, rbac('ADMIN')],
+      preHandler: [auth, rbac('ADMIN', 'HR')],
       schema: {
         tags: ['Users'],
         description: 'List all users (Admin only)',
@@ -101,7 +103,15 @@ async function routes(fastify) {
             search: { type: 'string', maxLength: 100 },
             role: {
               type: 'string',
-              enum: ['ADMIN', 'SENIOR_TL', 'TL', 'CAPTAIN', 'INTERN'],
+              enum: [
+                'ADMIN',
+                'MANAGEMENT',
+                'HR',
+                'SENIOR_TL',
+                'TL',
+                'CAPTAIN',
+                'INTERN',
+              ],
             },
             suspended: { type: 'string', enum: ['true', 'false'] },
             page: { type: 'integer', minimum: 1, default: 1 },
@@ -234,7 +244,7 @@ async function routes(fastify) {
   fastify.patch(
     '/:id',
     {
-      preHandler: [auth, rbac('ADMIN'), sanitize],
+      preHandler: [auth, rbac('ADMIN', 'HR'), sanitize],
       schema: {
         tags: ['Users'],
         description: 'Update user (Admin only)',
