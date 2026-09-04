@@ -28,6 +28,46 @@ const emailService = require('../../services/email');
 async function register(data, creator) {
   const nonHierarchyRoles = ['HR', 'MANAGEMENT'];
 
+  const allowedRolesByCreator = {
+    ADMIN: [
+      'ADMIN',
+      'MANAGEMENT',
+      'HR',
+      'SENIOR_TL',
+      'TL',
+      'CAPTAIN',
+      'INTERN',
+    ],
+    SENIOR_TL: ['TL', 'CAPTAIN', 'INTERN'],
+    TL: ['CAPTAIN', 'INTERN'],
+  };
+
+  const creatorRolePolicy = allowedRolesByCreator[creator.role];
+
+  if (creatorRolePolicy && !creatorRolePolicy.includes(data.role)) {
+    const error = new Error('You cannot create a user with this role');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (['SENIOR_TL', 'TL'].includes(creator.role)) {
+    if (!creator.departmentId) {
+      const error = new Error('Your account is not assigned to a department');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    if (data.departmentId && data.departmentId !== creator.departmentId) {
+      const error = new Error('You cannot create users in another department');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    data = { ...data, departmentId: creator.departmentId };
+  }
+
+  // Default to the creator as manager if none was explicitly chosen,
+  // so users created through the directory also appear in hierarchy views.
   const managerId =
     data.managerId ||
     (data.role === 'ADMIN' ||
@@ -39,6 +79,15 @@ async function register(data, creator) {
   if (managerId) {
     const manager = await repo.findByIdRaw(managerId);
     if (!manager) throw new Error('Manager not found');
+
+    if (
+      creator.role !== 'ADMIN' &&
+      manager.department_id !== creator.departmentId
+    ) {
+      const error = new Error('Manager must belong to your department');
+      error.statusCode = 403;
+      throw error;
+    }
 
     if (!isValidStep(manager.role, data.role)) {
       throw new Error(
