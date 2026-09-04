@@ -22,10 +22,11 @@ async function routes(fastify) {
   fastify.post(
     '/register',
     {
-      preHandler: [auth, rbac('ADMIN', 'HR')],
+      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL', 'TL', 'HR'), sanitize],
       schema: {
         tags: ['Authentication'],
-        description: 'Register a new user (Admin or HR)',
+        description:
+          'Register a user within the requester role and department scope',
         body: {
           type: 'object',
           required: ['email', 'password', 'role'],
