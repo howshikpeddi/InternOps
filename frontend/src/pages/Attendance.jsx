@@ -8,6 +8,7 @@ import AttendanceMarkForm from '../components/AttendanceMarkForm';
 import BulkAttendanceForm from '../components/BulkAttendanceForm';
 import CustomSelect from '../components/CustomSelect';
 import { ApiErrorState } from '../components/ui';
+import { ROLE_LABEL } from '../constants/roles';
 import DepartmentAttendanceSheet from '../components/department/DepartmentAttendanceSheet';
 
 function monthRange(month, today) {
@@ -56,9 +57,16 @@ export default function Attendance({
   const { deptId: routeDeptId } = useParams();
   const deptId = propDeptId || routeDeptId;
   const user = useAuthStore((s) => s.user);
-  const requestedDeptId = deptId || user?.department_id || '';
+  const requestedDeptId =
+    deptId || user?.departmentId || user?.department_id || '';
   const canMark = ['CAPTAIN', 'TL', 'SENIOR_TL'].includes(user?.role);
   const isAdmin = user?.role === 'ADMIN';
+  const canViewAttendanceSheet = [
+    'ADMIN',
+    'SENIOR_TL',
+    'TL',
+    'CAPTAIN',
+  ].includes(user?.role);
   const canViewAttendance = ['CAPTAIN', 'TL', 'SENIOR_TL', 'ADMIN'].includes(
     user?.role
   );
@@ -72,20 +80,13 @@ export default function Attendance({
   });
   const [page, setPage] = useState(1);
   const [viewAll, setViewAll] = useState(false);
-  const [viewTransitioning, setViewTransitioning] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const [selectedMonth, setSelectedMonth] = useState(today.slice(0, 7));
   const { from: sheetFrom, to: sheetTo } = monthRange(selectedMonth, today);
   const limit = 30;
 
   const switchAttendanceView = () => {
-    if (viewTransitioning) return;
-
-    setViewTransitioning(true);
-    window.setTimeout(() => {
-      setViewAll((current) => !current);
-      window.requestAnimationFrame(() => setViewTransitioning(false));
-    }, 160);
+    setViewAll((current) => !current);
   };
 
   useEffect(() => {
@@ -101,11 +102,11 @@ export default function Attendance({
     setPage(1);
   };
 
-  // Fetch departments if user is Admin
+  // Managers use their first authorized department as the default scope.
   const { data: departments = [] } = useQuery({
     queryKey: ['departments'],
     queryFn: () => api.get('/departments').then((res) => res.data),
-    enabled: isAdmin,
+    enabled: isManager && !isProjectView,
   });
 
   // Managers can pick any team member; everyone can always see their own.
@@ -119,41 +120,28 @@ export default function Attendance({
     queryFn: () =>
       api
         .get('/attendance/authorized-members', {
-          params: { department_id: requestedDeptId || undefined },
+          params: isAdmin
+            ? { department_id: requestedDeptId || undefined }
+            : undefined,
         })
-        .then((res) => res.data),
+        .then((res) => res.data || []),
     enabled: canViewAttendance && !isProjectView && !!user?.id,
   });
 
   const teamDeptId = team.find((member) => member.department_id)?.department_id;
-  const resolvedDeptId = requestedDeptId || teamDeptId || '';
+  const assignedDeptId = departments[0]?.id || '';
+  const resolvedDeptId = requestedDeptId || teamDeptId || assignedDeptId;
   const departmentIsResolving =
-    isManager && !isProjectView && !resolvedDeptId && !teamIsError;
+    canViewAttendanceSheet && !isProjectView && !resolvedDeptId && !teamIsError;
 
   const activeDepartment = departments.find(
     (department) => department.id === resolvedDeptId
   );
 
-  const downloadAttendance = async () => {
-    const response = await api.get('/reports/export/attendance-detail-csv', {
-      params: {
-        from: sheetFrom,
-        to: sheetTo,
-        department_id: resolvedDeptId || undefined,
-      },
-      responseType: 'blob',
-    });
-    const url = URL.createObjectURL(response.data);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `attendance-${selectedMonth}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   const {
     data: sheetData,
     isLoading: sheetIsLoading,
+    isFetching: sheetIsFetching,
     error: sheetError,
     refetch: refetchSheet,
   } = useQuery({
@@ -164,8 +152,28 @@ export default function Attendance({
           params: { from: sheetFrom, to: sheetTo },
         })
         .then((res) => res.data),
-    enabled: viewAll && !!resolvedDeptId && !isProjectView,
+    enabled: viewAll && !!resolvedDeptId,
   });
+
+  const sheetAvailableMonths = sheetData?.available_months || [];
+  const sheetMatchesSelectedMonth =
+    !!sheetData &&
+    (sheetAvailableMonths.length === 0 ||
+      sheetAvailableMonths.includes(selectedMonth));
+  const validSheetData = sheetMatchesSelectedMonth ? sheetData : null;
+  const attendanceSheetIsPending =
+    viewAll &&
+    !!resolvedDeptId &&
+    (sheetIsLoading || !sheetMatchesSelectedMonth);
+  useEffect(() => {
+    if (
+      !sheetAvailableMonths.length ||
+      sheetAvailableMonths.includes(selectedMonth)
+    ) {
+      return;
+    }
+    setSelectedMonth(sheetAvailableMonths[sheetAvailableMonths.length - 1]);
+  }, [selectedMonth, sheetData?.available_months]);
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['attendance', viewUserId, page],
     queryFn: () =>
@@ -183,7 +191,7 @@ export default function Attendance({
   const effectiveTeam = isProjectView ? roster : team;
 
   useEffect(() => {
-    if (!resolvedDeptId || isProjectView || team.length === 0) return;
+    if (isProjectView || team.length === 0) return;
     const selectedUserIsVisible =
       viewUserId === user?.id ||
       team.some((member) => member.id === viewUserId);
@@ -191,7 +199,7 @@ export default function Attendance({
       setViewUserId(user?.id || sortAttendanceMembers(team)[0].id);
       setPage(1);
     }
-  }, [resolvedDeptId, isProjectView, team, user?.id, viewUserId]);
+  }, [isProjectView, team, user?.id, viewUserId]);
   const selectedName =
     viewUserId === user?.id
       ? 'Me'
@@ -218,12 +226,12 @@ export default function Attendance({
   const attendanceUserOptions = attendanceOptionMembers.map((member) => ({
     value: member.id,
     label: member.isCurrentUser
-      ? `Me (${member.email || 'Current user'}) - ${member.role}`
-      : `${member.full_name || member.email} (${member.role})`,
+      ? `Me (${member.email || 'Current user'}) - ${ROLE_LABEL[member.role] || member.role}`
+      : `${member.full_name || member.email} (${ROLE_LABEL[member.role] || member.role})`,
   }));
 
   return (
-    <div className="animate-fade-in-up">
+    <div>
       {/* Admin Department Navigation Context Banner */}
       {isAdmin && deptId && !isProjectView && (
         <div className="mb-6 p-4 rounded-3xl bg-gradient-to-r from-slate-900 to-indigo-950 text-white shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-indigo-500/20 animate-fade-in">
@@ -342,6 +350,7 @@ export default function Attendance({
                       View all attendance
                     </button>
                   ) : (
+                    canViewAttendanceSheet &&
                     resolvedDeptId && (
                       <button
                         type="button"
@@ -351,7 +360,6 @@ export default function Attendance({
                             ? 'Switch to individual view'
                             : 'View all attendance'
                         }
-                        disabled={viewTransitioning}
                         className={`relative h-11 shrink-0 overflow-hidden rounded-xl bg-emerald-600 text-sm font-extrabold text-white transition-[width,background-color] duration-300 ease-in-out hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50 ${
                           viewAll ? 'w-[152px]' : 'w-[104px]'
                         }`}
@@ -393,23 +401,16 @@ export default function Attendance({
             )}
           </div>
 
-          <div
-            aria-live="polite"
-            className={`transition-[opacity,transform] duration-200 ease-out ${
-              viewTransitioning
-                ? 'translate-y-1 opacity-0'
-                : 'translate-y-0 opacity-100'
-            }`}
-          >
+          <div aria-live="polite">
             {viewAll && (
               <div className="mb-5">
                 <DepartmentAttendanceSheet
                   departmentName={activeDepartment?.name}
-                  data={sheetData}
+                  data={validSheetData}
                   selectedMonth={selectedMonth}
                   onMonthChange={setSelectedMonth}
-                  onDownload={downloadAttendance}
-                  isLoading={sheetIsLoading}
+                  isLoading={attendanceSheetIsPending || sheetIsLoading}
+                  isRefreshing={sheetIsFetching && !!validSheetData}
                   error={sheetError}
                   onRetry={refetchSheet}
                 />
@@ -451,7 +452,9 @@ export default function Attendance({
                         <tr>
                           <th className="px-6 py-4 font-extrabold">Date</th>
                           <th className="px-6 py-4 font-extrabold">Status</th>
-                          <th className="px-6 py-4 font-extrabold">Remarks</th>
+                          <th className="px-6 py-4 text-center font-extrabold">
+                            Remarks
+                          </th>
                         </tr>
                       </thead>
 
@@ -483,8 +486,17 @@ export default function Attendance({
                               </span>
                             </td>
 
-                            <td className="px-6 py-4 text-slate-600 dark:text-slate-300">
-                              {a.remarks || 'ΓÇö'}
+                            <td className="px-6 py-4 text-center text-slate-600 dark:text-slate-300">
+                              {a.remarks ? (
+                                a.remarks
+                              ) : (
+                                <span
+                                  className="inline-flex min-h-5 items-center justify-center text-base leading-none"
+                                  aria-label="No remarks"
+                                >
+                                  &mdash;
+                                </span>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -494,8 +506,8 @@ export default function Attendance({
 
                   <div className="flex items-center justify-between mt-4 text-sm text-slate-500 dark:text-slate-400">
                     <span>
-                      {total} record{total === 1 ? '' : 's'} ┬╖ page {page} of{' '}
-                      {totalPages}
+                      {total} record{total === 1 ? '' : 's'} &middot; page{' '}
+                      {page} of {totalPages}
                     </span>
 
                     <div className="flex gap-2">
@@ -582,15 +594,26 @@ export default function Attendance({
                       Resolving department attendance...
                     </p>
                   )}
-                  {!isProjectView && resolvedDeptId && (
+                  {isProjectView && onViewAllAttendance ? (
                     <button
                       type="button"
-                      onClick={switchAttendanceView}
-                      disabled={viewTransitioning}
-                      className="inline-flex h-11 w-full shrink-0 items-center justify-center rounded-xl bg-emerald-600 px-5 text-sm font-extrabold text-white transition-colors hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-70 sm:ml-auto sm:w-auto"
+                      onClick={() => onViewAllAttendance(viewUserId)}
+                      className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-extrabold text-white transition-colors hover:bg-emerald-700 sm:ml-auto sm:w-auto"
                     >
-                      {viewAll ? 'Individual View' : 'View All'}
+                      <CalendarCheck className="h-4 w-4" aria-hidden="true" />
+                      View All Attendance
                     </button>
+                  ) : (
+                    canViewAttendanceSheet &&
+                    resolvedDeptId && (
+                      <button
+                        type="button"
+                        onClick={switchAttendanceView}
+                        className="inline-flex h-11 w-full shrink-0 items-center justify-center rounded-xl bg-emerald-600 px-5 text-sm font-extrabold text-white transition-colors hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-70 sm:ml-auto sm:w-auto"
+                      >
+                        {viewAll ? 'Individual View' : 'View All'}
+                      </button>
+                    )
                   )}
                 </div>
               </>
@@ -601,23 +624,16 @@ export default function Attendance({
             )}
           </div>
 
-          <div
-            aria-live="polite"
-            className={`transition-[opacity,transform] duration-200 ease-out ${
-              viewTransitioning
-                ? 'translate-y-1 opacity-0'
-                : 'translate-y-0 opacity-100'
-            }`}
-          >
+          <div aria-live="polite">
             {viewAll && (
               <div className="mb-5">
                 <DepartmentAttendanceSheet
                   departmentName={activeDepartment?.name}
-                  data={sheetData}
+                  data={validSheetData}
                   selectedMonth={selectedMonth}
                   onMonthChange={setSelectedMonth}
-                  onDownload={downloadAttendance}
-                  isLoading={sheetIsLoading}
+                  isLoading={attendanceSheetIsPending || sheetIsLoading}
+                  isRefreshing={sheetIsFetching && !!validSheetData}
                   error={sheetError}
                   onRetry={refetchSheet}
                 />
@@ -657,7 +673,9 @@ export default function Attendance({
                         <tr>
                           <th className="px-6 py-4 font-extrabold">Date</th>
                           <th className="px-6 py-4 font-extrabold">Status</th>
-                          <th className="px-6 py-4 font-extrabold">Remarks</th>
+                          <th className="px-6 py-4 text-center font-extrabold">
+                            Remarks
+                          </th>
                         </tr>
                       </thead>
 
@@ -689,8 +707,17 @@ export default function Attendance({
                               </span>
                             </td>
 
-                            <td className="px-6 py-4 text-slate-600 dark:text-slate-300">
-                              {a.remarks || 'ΓÇö'}
+                            <td className="px-6 py-4 text-center text-slate-600 dark:text-slate-300">
+                              {a.remarks ? (
+                                a.remarks
+                              ) : (
+                                <span
+                                  className="inline-flex min-h-5 items-center justify-center text-base leading-none"
+                                  aria-label="No remarks"
+                                >
+                                  &mdash;
+                                </span>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -700,8 +727,8 @@ export default function Attendance({
 
                   <div className="flex items-center justify-between mt-4 text-sm text-slate-500 dark:text-slate-400">
                     <span>
-                      {total} record{total === 1 ? '' : 's'} ┬╖ page {page} of{' '}
-                      {totalPages}
+                      {total} record{total === 1 ? '' : 's'} &middot; page{' '}
+                      {page} of {totalPages}
                     </span>
 
                     <div className="flex gap-2">

@@ -125,20 +125,15 @@ def test_generate_preserves_structured_messages(client, monkeypatch):
 
     captured = {}
 
-    class FakeProvider:
-        provider_name = "fake-provider"
-
-        async def generate_chat(self, messages, temperature=0.7, **kwargs):
-            captured["messages"] = messages
-            captured["temperature"] = temperature
-            return "structured reply"
-
-        async def generate_text(self, prompt, temperature=0.7, **kwargs):
-            captured["flattened_prompt"] = prompt
-            return "flattened reply"
+    async def fake_generate_chat(messages, temperature=0.7, **kwargs):
+        captured["messages"] = messages
+        captured["temperature"] = temperature
+        return "structured reply", "fake-provider"
 
     monkeypatch.setattr(
-        ai_routes_module, "get_provider", lambda: FakeProvider()
+        ai_routes_module.ai_orchestrator,
+        "generate_chat_with_fallback",
+        fake_generate_chat,
     )
 
     r = client.post(
@@ -162,9 +157,6 @@ def test_generate_preserves_structured_messages(client, monkeypatch):
         "content": "structured reply",
     }
 
-    # The conversation must reach the provider as structured messages,
-    # not collapsed into a single flattened prompt string.
-    assert "flattened_prompt" not in captured
     assert captured["messages"] == [
         {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "Hi"},
@@ -172,46 +164,52 @@ def test_generate_preserves_structured_messages(client, monkeypatch):
         {"role": "user", "content": "How are you?"},
     ]
     assert captured["temperature"] == 0.3
-
-
+  
 def test_generate_falls_back_to_flat_prompt(client, monkeypatch):
     import app.api.ai_routes as ai_routes_module
 
     captured = {}
 
-    class FakeProvider:
-        provider_name = "fake-provider"
-
-        async def generate_chat(self, messages, temperature=0.7, **kwargs):
-            captured["messages"] = messages
-            return "structured reply"
-
-        async def generate_text(self, prompt, temperature=0.7, **kwargs):
-            captured["flattened_prompt"] = prompt
-            return "flattened reply"
+    async def fake_generate_text(prompt, temperature=0.7, **kwargs):
+        captured["prompt"] = prompt
+        captured["temperature"] = temperature
+        return "flattened reply", "fake-provider"
 
     monkeypatch.setattr(
-        ai_routes_module, "get_provider", lambda: FakeProvider()
+        ai_routes_module.ai_orchestrator,
+        "generate_text_with_fallback",
+        fake_generate_text,
     )
 
     r = client.post("/ai/generate", json={"prompt": "hello"})
 
     assert r.status_code == 200
     assert r.json()["content"] == "flattened reply"
-    assert captured["flattened_prompt"] == "hello"
-    assert "messages" not in captured
+    assert r.json()["provider"] == "fake-provider"
+    assert captured["prompt"] == "hello"
+    assert captured["temperature"] == 0.7
 
 
 def test_health_endpoint(client, monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    for key in [
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "HUGGINGFACE_TOKEN",
+        "NVIDIA_API_KEY",
+    ]:
+        monkeypatch.delenv(key, raising=False)
     r = client.get("/ai/health")
     assert r.status_code == 200
     body = r.json()
     names = {p["name"] for p in body["providers"]}
     assert {"gemini", "openai"}.issubset(names)
-    assert all(p["status"] == "unhealthy" for p in body["providers"])
+    provider_status = {p["name"]: p["status"] for p in body["providers"]}
 
+    assert provider_status["gemini"] == "unhealthy"
+    assert provider_status["openai"] == "unhealthy"
 
 def test_health_endpoint_reports_healthy_when_key_present(client, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")

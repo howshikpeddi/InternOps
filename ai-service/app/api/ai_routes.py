@@ -198,8 +198,6 @@ async def chat(
     response_model=ProviderResult,
 )
 async def generate_text(request: GenerationRequest):
-    provider = get_provider()
-
     if request.messages:
         # Preserve role/content structure instead of flattening the
         # conversation into a single prompt string.
@@ -207,20 +205,20 @@ async def generate_text(request: GenerationRequest):
             {"role": msg.role.value, "content": msg.content}
             for msg in request.messages
         ]
-        content = await provider.generate_chat(
-            conversation, temperature=request.temperature
+        content, provider_name = await ai_orchestrator.generate_chat_with_fallback(
+            conversation,
+            temperature=request.temperature,
         )
     else:
-        content = await provider.generate_text(
-            request.prompt, temperature=request.temperature
+        content, provider_name = await ai_orchestrator.generate_text_with_fallback(
+            request.prompt,
+            temperature=request.temperature,
         )
-
     return ProviderResult(
-        provider=provider.provider_name,
+        provider=provider_name,
         cached=False,
         content=content,
     )
-
 # ---------------------------------------------------------------------------
 # POST /ai/generate-image
 # ---------------------------------------------------------------------------

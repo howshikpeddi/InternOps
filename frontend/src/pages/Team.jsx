@@ -1,12 +1,20 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../lib/axios';
+import { resolveUploadUrl } from '../lib/uploadUrl';
 import useAuthStore from '../store/auth';
-import { Users } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  LayoutGrid,
+  List,
+  Users,
+} from 'lucide-react';
 import CustomSelect from '../components/CustomSelect';
 import CustomDatePicker from '../components/CustomDatePicker';
 import { ApiErrorState } from '../components/ui';
+import { getTeamRoleBreakdown } from '../utils/teamRoleBreakdown';
 
 const ROLE_LABEL = {
   SENIOR_TL: 'Senior TL',
@@ -29,6 +37,13 @@ const ROLE_BADGE = {
 };
 
 const STATUS_OPTIONS = ['ACTIVE', 'COMPLETED', 'ON_HOLD', 'TERMINATED'];
+
+function localDateValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 const STATUS_BADGE = {
   ACTIVE:
@@ -103,16 +118,16 @@ function Stars({ value }) {
   return (
     <span
       title={`${safeRaw.toFixed(1).replace(/\.0$/, '')}/10`}
-      className="inline-flex items-center gap-2"
+      className="inline-flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-0.5"
     >
-      <span className="inline-flex items-center gap-0.5 text-amber-500">
+      <span className="inline-flex shrink-0 items-center gap-0.5 text-amber-500">
         <span>{'★'.repeat(full)}</span>
         <span className="text-slate-300 dark:text-slate-700">
           {'★'.repeat(empty)}
         </span>
       </span>
 
-      <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
+      <span className="shrink-0 whitespace-nowrap text-xs font-bold text-slate-500 dark:text-slate-400">
         {safeRaw.toFixed(1).replace(/\.0$/, '')}/10
       </span>
     </span>
@@ -223,7 +238,7 @@ function StatCard({ label, value, sub }) {
 function Avatar({ m, size = 'w-10 h-10' }) {
   return m.avatar_url ? (
     <img
-      src={m.avatar_url}
+      src={resolveUploadUrl(m.avatar_url)}
       alt=""
       className={`${size} rounded-2xl object-cover border border-slate-200 dark:border-slate-700 shadow-sm`}
     />
@@ -694,6 +709,15 @@ function MemberDetail({ memberId, onClose }) {
           ? String(member.joining_date).slice(0, 10)
           : '',
         internship_status: member.internship_status || 'ACTIVE',
+        lifecycle_effective_date: member.lifecycle_effective_date
+          ? String(member.lifecycle_effective_date).slice(0, 10)
+          : '',
+        completion_date: member.completion_date
+          ? String(member.completion_date).slice(0, 10)
+          : '',
+        extended_completion_date: member.extended_completion_date
+          ? String(member.extended_completion_date).slice(0, 10)
+          : '',
         notes: member.notes || '',
       });
     }
@@ -714,10 +738,94 @@ function MemberDetail({ memberId, onClose }) {
       setTimeout(() => setMessage(''), 2500);
     },
     onError: (err) => {
-      setError(err.response?.data?.error || 'Save failed');
+      const response = err.response?.data;
+      const detailMessage = Array.isArray(response?.details)
+        ? response.details.find((detail) => detail?.message)?.message
+        : response?.details?.message;
+      setError(detailMessage || response?.error || 'Save failed');
       setMessage('');
     },
   });
+
+  const saveMemberDetails = () => {
+    if (form.internship_status === 'COMPLETED' && !form.completion_date) {
+      setError('Completion date is required');
+      setMessage('');
+      return;
+    }
+
+    if (
+      form.internship_status === 'COMPLETED' &&
+      form.completion_date > lifecycleToday
+    ) {
+      setError('Completion date cannot be in the future');
+      setMessage('');
+      return;
+    }
+
+    if (
+      form.internship_status === 'TERMINATED' &&
+      !form.lifecycle_effective_date
+    ) {
+      setError('Effective date is required');
+      setMessage('');
+      return;
+    }
+
+    if (
+      form.internship_status === 'TERMINATED' &&
+      form.lifecycle_effective_date > lifecycleToday
+    ) {
+      setError('Effective date cannot be in the future');
+      setMessage('');
+      return;
+    }
+
+    if (
+      form.internship_status === 'ACTIVE' &&
+      form.extended_completion_date &&
+      !form.completion_date
+    ) {
+      setError(
+        'Planned completion date is required before adding an extension'
+      );
+      setMessage('');
+      return;
+    }
+
+    if (
+      form.internship_status === 'ACTIVE' &&
+      form.extended_completion_date &&
+      form.extended_completion_date <= form.completion_date
+    ) {
+      setError(
+        'Extended completion date must be later than the planned completion date'
+      );
+      setMessage('');
+      return;
+    }
+
+    const payload = { ...form };
+
+    if (form.internship_status === 'COMPLETED') {
+      payload.lifecycle_effective_date = null;
+      payload.extended_completion_date = null;
+    } else if (form.internship_status === 'TERMINATED') {
+      payload.completion_date = null;
+      payload.extended_completion_date = null;
+    } else if (form.internship_status === 'ACTIVE') {
+      payload.lifecycle_effective_date = null;
+      payload.completion_date = form.completion_date || null;
+      payload.extended_completion_date = form.extended_completion_date || null;
+    } else {
+      delete payload.lifecycle_effective_date;
+      delete payload.completion_date;
+      delete payload.extended_completion_date;
+    }
+
+    setError('');
+    saveMut.mutate(payload);
+  };
 
   const statusMut = useMutation({
     mutationFn: (suspended) =>
@@ -769,6 +877,7 @@ function MemberDetail({ memberId, onClose }) {
   });
 
   const pct = member ? attendancePct(member) : null;
+  const lifecycleToday = localDateValue();
 
   const editStatusOptions = STATUS_OPTIONS.map((s) => ({
     value: s,
@@ -799,7 +908,7 @@ function MemberDetail({ memberId, onClose }) {
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md bg-slate-50 dark:bg-slate-950 h-full overflow-auto shadow-2xl border-l border-slate-200 dark:border-slate-700"
+        className="w-full max-w-md bg-slate-50 dark:bg-slate-800 h-full overflow-auto shadow-2xl border-l border-slate-200 dark:border-slate-700"
         onClick={(e) => e.stopPropagation()}
       >
         {memberIsError && !member ? (
@@ -857,11 +966,11 @@ function MemberDetail({ memberId, onClose }) {
                   </p>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                  <p className="text-base font-extrabold">
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                  <div className="flex min-h-7 items-center justify-center font-extrabold">
                     <Stars value={member.avg_rating} />
-                  </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                     {member.rating_count} ratings
                   </p>
                 </div>
@@ -938,12 +1047,17 @@ function MemberDetail({ memberId, onClose }) {
                     <dl className="space-y-1 text-sm">
                       <Row label="Reports to" value={member.manager_name} />
                       <Row label="Department" value={member.department_name} />
+                      <Row label="Intern Code" value={member.intern_code} />
+                      <Row
+                        label="Internship Domain"
+                        value={member.internship_domain}
+                      />
+                      <Row label="Position" value={member.position} />
                       <Row label="Phone" value={member.phone} />
                       <Row label="Location" value={member.location} />
                       <Row label="College" value={member.college} />
                       <Row label="Course" value={member.course} />
                       <Row label="Year" value={member.year_of_study} />
-                      <Row label="Position" value={member.position} />
                       <Row
                         label="Joining date"
                         value={
@@ -952,6 +1066,30 @@ function MemberDetail({ memberId, onClose }) {
                             : null
                         }
                       />
+                      {member.lifecycle_effective_date && (
+                        <Row
+                          label="Lifecycle Effective Date"
+                          value={new Date(
+                            member.lifecycle_effective_date
+                          ).toLocaleDateString()}
+                        />
+                      )}
+                      {member.completion_date && (
+                        <Row
+                          label="Completion Date"
+                          value={new Date(
+                            member.completion_date
+                          ).toLocaleDateString()}
+                        />
+                      )}
+                      {member.extended_completion_date && (
+                        <Row
+                          label="Extended Completion Date"
+                          value={new Date(
+                            member.extended_completion_date
+                          ).toLocaleDateString()}
+                        />
+                      )}
                       <Row
                         label="Status"
                         value={
@@ -979,6 +1117,21 @@ function MemberDetail({ memberId, onClose }) {
                           )
                         }
                       />
+                      {member.offer_letter_url && (
+                        <Row
+                          label="Offer Letter"
+                          value={
+                            <a
+                              href={member.offer_letter_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-bold text-indigo-600 hover:underline dark:text-indigo-400"
+                            >
+                              View offer letter
+                            </a>
+                          }
+                        />
+                      )}
                       <Row label="Notes" value={member.notes} />
                     </dl>
                   ) : (
@@ -997,9 +1150,27 @@ function MemberDetail({ memberId, onClose }) {
                           ) : f.type === 'select' ? (
                             <CustomSelect
                               value={form[f.key]}
-                              onChange={(value) =>
-                                setForm({ ...form, [f.key]: value })
-                              }
+                              onChange={(value) => {
+                                setError('');
+                                setForm({
+                                  ...form,
+                                  internship_status: value,
+                                  completion_date:
+                                    value === 'COMPLETED'
+                                      ? lifecycleToday
+                                      : value === 'ACTIVE'
+                                        ? form.completion_date || ''
+                                        : '',
+                                  lifecycle_effective_date:
+                                    value === 'TERMINATED'
+                                      ? lifecycleToday
+                                      : '',
+                                  extended_completion_date:
+                                    value === 'ACTIVE'
+                                      ? form.extended_completion_date || ''
+                                      : '',
+                                });
+                              }}
                               options={editStatusOptions}
                               placeholder="Select status"
                               className="w-full"
@@ -1026,9 +1197,63 @@ function MemberDetail({ memberId, onClose }) {
                         </Field>
                       ))}
 
+                      {form.internship_status === 'ACTIVE' && (
+                        <>
+                          <Field label="Planned Completion Date">
+                            <CustomDatePicker
+                              value={form.completion_date}
+                              onChange={(value) =>
+                                setForm({ ...form, completion_date: value })
+                              }
+                              placeholder="Select planned completion date"
+                              className="w-full"
+                            />
+                          </Field>
+                          <Field label="Extended Completion Date (Optional)">
+                            <CustomDatePicker
+                              value={form.extended_completion_date}
+                              onChange={(value) =>
+                                setForm({
+                                  ...form,
+                                  extended_completion_date: value,
+                                })
+                              }
+                              placeholder="Select extended completion date"
+                              className="w-full"
+                            />
+                          </Field>
+                        </>
+                      )}
+                      {form.internship_status === 'COMPLETED' && (
+                        <Field label="Completion Date">
+                          <CustomDatePicker
+                            value={form.completion_date}
+                            onChange={(value) =>
+                              setForm({ ...form, completion_date: value })
+                            }
+                            placeholder="Select completion date"
+                            className="w-full"
+                          />
+                        </Field>
+                      )}
+                      {form.internship_status === 'TERMINATED' && (
+                        <Field label="Effective Date">
+                          <CustomDatePicker
+                            value={form.lifecycle_effective_date}
+                            onChange={(value) =>
+                              setForm({
+                                ...form,
+                                lifecycle_effective_date: value,
+                              })
+                            }
+                            placeholder="Select effective date"
+                            className="w-full"
+                          />
+                        </Field>
+                      )}
                       <div className="flex gap-2 pt-1">
                         <button
-                          onClick={() => saveMut.mutate(form)}
+                          onClick={saveMemberDetails}
                           disabled={saveMut.isPending}
                           className="bg-gradient-to-r from-indigo-600 to-blue-600 text-white px-4 py-2 rounded-2xl flex-1 font-bold disabled:opacity-60"
                         >
@@ -1280,9 +1505,21 @@ export default function Team() {
   const [roleFilter, setRoleFilter] = useState('');
   const [ratingFilter, setRatingFilter] = useState('');
   const [eligibilityFilter, setEligibilityFilter] = useState('');
-  const [view, setView] = useState('table');
+  const [view, setView] = useState(() => {
+    const storedView = window.localStorage.getItem('internops-team-view');
+    return storedView === 'cards' ? 'cards' : 'table';
+  });
   const [selected, setSelected] = useState(null);
   const [adding, setAdding] = useState(false);
+  const tableScrollRef = useRef(null);
+  const [tableScrollState, setTableScrollState] = useState({
+    canScrollLeft: false,
+    canScrollRight: true,
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem('internops-team-view', view);
+  }, [view]);
 
   const user = useAuthStore((s) => s.user);
   const canAdd = rolesBelow(user?.role).length > 0;
@@ -1354,6 +1591,7 @@ export default function Team() {
           m.position,
           m.id,
           m.department_name,
+          m.internship_domain,
         ].some((v) => (v || '').toLowerCase().includes(q));
       })
       .sort((a, b) => {
@@ -1391,7 +1629,7 @@ export default function Team() {
         label: d,
       })),
     ];
-  }, [members]);
+  }, [members, user?.role]);
 
   const roles = useMemo(
     () => [...new Set(members.map((m) => m.role))],
@@ -1433,45 +1671,61 @@ export default function Team() {
       (sum, m) => sum + (Number(m.pending_proofs) || 0),
       0
     );
-    const seniorTlCount = members.filter(
-      (member) => member.role === 'SENIOR_TL'
-    ).length;
-    const tlCount = members.filter((member) => member.role === 'TL').length;
-    const captainCount = members.filter(
-      (member) => member.role === 'CAPTAIN'
-    ).length;
-    const internCount = members.filter(
-      (member) => member.role === 'INTERN'
-    ).length;
-    const memberBreakdown = (
+    const breakdownItems = getTeamRoleBreakdown(user?.role, members);
+    const memberBreakdown = breakdownItems.length ? (
       <span className="block text-[13px] font-semibold leading-5 text-slate-700 dark:text-slate-300">
-        <span className="flex items-center gap-2.5 whitespace-nowrap">
-          <span>
-            {seniorTlCount} {seniorTlCount === 1 ? 'Senior TL' : 'Senior TLs'}
+        {breakdownItems.map((row) => (
+          <span key={row.map(({ role }) => role).join('-')} className="block">
+            {row.map(({ role, count, label }, itemIndex) => (
+              <span key={role} className="inline-block whitespace-nowrap">
+                {itemIndex > 0 && (
+                  <span className="mx-2 font-extrabold text-indigo-400 dark:text-indigo-300">
+                    •
+                  </span>
+                )}
+                {count} {label}
+              </span>
+            ))}
           </span>
-          <span className="font-extrabold text-indigo-400 dark:text-indigo-300">
-            •
-          </span>
-          <span>
-            {tlCount} {tlCount === 1 ? 'TL' : 'TLs'}
-          </span>
-        </span>
-        <span className="mt-0.5 flex items-center gap-2.5 whitespace-nowrap">
-          <span>
-            {captainCount} {captainCount === 1 ? 'Captain' : 'Captains'}
-          </span>
-          <span className="font-extrabold text-indigo-400 dark:text-indigo-300">
-            •
-          </span>
-          <span>
-            {internCount} {internCount === 1 ? 'Intern' : 'Interns'}
-          </span>
-        </span>
+        ))}
+      </span>
+    ) : (
+      <span className="text-[13px] font-semibold text-slate-700 dark:text-slate-300">
+        No team members
       </span>
     );
 
     return { active, avgAtt, avgRating, pendingProofs, memberBreakdown };
-  }, [members]);
+  }, [members, user?.role]);
+
+  const updateTableScrollState = () => {
+    const element = tableScrollRef.current;
+    if (!element) return;
+    const maxScrollLeft = Math.max(
+      0,
+      element.scrollWidth - element.clientWidth
+    );
+    setTableScrollState({
+      canScrollLeft: element.scrollLeft > 1,
+      canScrollRight: element.scrollLeft < maxScrollLeft - 1,
+    });
+  };
+  const scrollTeamTable = (direction) => {
+    const element = tableScrollRef.current;
+    if (!element) return;
+    element.scrollBy({
+      left: direction * Math.max(320, element.clientWidth * 0.72),
+      behavior: 'smooth',
+    });
+  };
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(updateTableScrollState);
+    window.addEventListener('resize', updateTableScrollState);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', updateTableScrollState);
+    };
+  }, [filtered.length, view]);
 
   const exportCsv = async () => {
     try {
@@ -1528,9 +1782,46 @@ export default function Team() {
           </div>
         </div>
 
-        {/* Right Side: Action Buttons */}
+        {/* Right Side: View and action controls */}
         <div className="flex items-center gap-2">
+          <div
+            className="flex rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden bg-white dark:bg-slate-900 shadow-sm"
+            role="group"
+            aria-label="Team member view"
+          >
+            <button
+              type="button"
+              onClick={() => setView('table')}
+              aria-label="Show team members as a table"
+              aria-pressed={view === 'table'}
+              title="Table view"
+              className={`p-3 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-inset ${
+                view === 'table'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              <List className="w-5 h-5" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setView('cards')}
+              aria-label="Show team members as cards"
+              aria-pressed={view === 'cards'}
+              title="Card view"
+              className={`p-3 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-inset ${
+                view === 'cards'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              <LayoutGrid className="w-5 h-5" aria-hidden="true" />
+            </button>
+          </div>
+
           <button
+            type="button"
             onClick={exportCsv}
             className="px-4 py-2.5 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors shadow-sm"
           >
@@ -1577,7 +1868,7 @@ export default function Team() {
         <div className="relative flex-1 min-w-[240px]">
           <input
             className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white pl-11 pr-4 py-3 rounded-2xl w-full focus:ring-2 focus:ring-indigo-400/50 outline-none shadow-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
-            placeholder="Search name, email, college, position..."
+            placeholder="Search name, email, domain, college, position..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -1625,30 +1916,6 @@ export default function Team() {
           placeholder="All"
           className="w-full sm:w-40 [&>button]:h-12 [&>button]:flex [&>button]:items-center [&>button]:whitespace-nowrap"
         />
-
-        <div className="flex h-12 items-stretch rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
-          <button
-            onClick={() => setView('table')}
-            className={`px-4 py-3 text-sm font-bold transition ${
-              view === 'table'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
-            }`}
-          >
-            Table
-          </button>
-
-          <button
-            onClick={() => setView('cards')}
-            className={`px-4 py-3 text-sm font-bold transition ${
-              view === 'cards'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
-            }`}
-          >
-            Cards
-          </button>
-        </div>
       </div>
 
       {filtered.length === 0 ? (
@@ -1658,148 +1925,188 @@ export default function Team() {
             : 'No members match your search.'}
         </div>
       ) : view === 'table' ? (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-700 shadow-[0_14px_35px_rgba(15,23,42,0.06)] dark:shadow-none overflow-hidden">
-          <table className="w-full table-fixed text-sm">
-            <thead className="bg-slate-50 dark:bg-slate-950 text-left text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
-              <tr>
-                <th className="w-[25%] px-3 py-4 font-extrabold">Member</th>
-                <th className="w-[8%] px-1.5 py-4 font-extrabold text-center">
-                  Role
-                </th>
-                <th className="w-[9%] px-1.5 py-4 font-extrabold text-center">
-                  Department
-                </th>
-                <th className="w-[10%] px-1.5 py-4 font-extrabold text-center">
-                  Phone
-                </th>
-                <th className="w-[11%] px-1.5 py-4 font-extrabold text-center">
-                  Attendance
-                </th>
-                <th className="w-[12%] px-1.5 py-4 font-extrabold text-center">
-                  Rating
-                </th>
-                <th className="w-[7%] px-1.5 py-4 font-extrabold text-center">
-                  Tasks
-                </th>
-                <th className="w-[8%] px-1.5 py-4 font-extrabold text-center">
-                  Pending
-                </th>
-                <th className="w-[10%] px-1.5 py-4 font-extrabold text-center">
-                  Status
-                </th>
-              </tr>
-            </thead>
+        <>
+          <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_14px_35px_rgba(15,23,42,0.06)] dark:border-slate-700 dark:bg-slate-900 dark:shadow-none">
+            <div
+              ref={tableScrollRef}
+              className="overflow-x-auto"
+              onScroll={updateTableScrollState}
+            >
+              <table className="w-full min-w-[1360px] table-fixed text-sm">
+                <thead className="border-b border-slate-200 text-left text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                  <tr className="bg-[#f8fafc] dark:bg-[#172033]">
+                    <th className="sticky left-0 z-20 w-[260px] min-w-[260px] bg-[#f8fafc] px-3 py-4 font-extrabold shadow-[8px_0_14px_-14px_rgba(15,23,42,0.7)] dark:bg-[#172033]">
+                      Member
+                    </th>
 
-            <tbody>
-              {filtered.map((m, index) => {
-                const pct = attendancePct(m);
+                    <th className="w-[8%] px-1.5 py-4 text-center font-extrabold">
+                      Role
+                    </th>
 
-                return (
-                  <tr
-                    key={m.id}
-                    className={`border-b border-slate-100 dark:border-slate-700 last:border-b-0 cursor-pointer transition ${
-                      index % 2 === 0
-                        ? 'bg-white dark:bg-slate-900'
-                        : 'bg-slate-50/50 dark:bg-slate-800/35'
-                    } hover:bg-indigo-50/50 dark:hover:bg-slate-800`}
-                    onClick={() => setSelected(m.id)}
-                  >
-                    <td className="px-3 py-4">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <Avatar m={m} />
+                    <th className="w-[9%] px-1.5 py-4 text-center font-extrabold">
+                      Department
+                    </th>
 
-                        <div className="min-w-0">
-                          <div className="truncate font-extrabold text-slate-900 dark:text-white">
-                            {m.full_name || '—'}
-                          </div>
+                    <th className="w-[10%] px-1.5 py-4 text-center font-extrabold">
+                      Domain
+                    </th>
 
-                          <div className="truncate text-xs text-slate-500 dark:text-slate-400">
-                            {m.email}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
+                    <th className="w-[10%] px-1.5 py-4 text-center font-extrabold">
+                      Phone
+                    </th>
 
-                    <td className="px-1.5 py-4 text-center align-middle">
-                      <span
-                        className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold whitespace-nowrap ${
-                          ROLE_BADGE[m.role] || ROLE_BADGE.INTERN
-                        }`}
+                    <th className="w-[11%] px-1.5 py-4 text-center font-extrabold">
+                      Attendance
+                    </th>
+
+                    <th className="w-[12%] px-1.5 py-4 text-center font-extrabold">
+                      Rating
+                    </th>
+
+                    <th className="w-[7%] px-1.5 py-4 text-center font-extrabold">
+                      Tasks
+                    </th>
+
+                    <th
+                      className="w-[150px] min-w-[150px] whitespace-nowrap px-2 py-4 text-center font-extrabold"
+                      title="Submitted task proofs awaiting verification"
+                    >
+                      Proofs Pending
+                    </th>
+
+                    <th className="w-[10%] px-1.5 py-4 text-center font-extrabold">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filtered.map((m, index) => {
+                    const pct = attendancePct(m);
+
+                    return (
+                      <tr
+                        key={m.id}
+                        className={`group border-b border-slate-100 dark:border-slate-700 last:border-b-0 cursor-pointer transition ${
+                          index % 2 === 0
+                            ? 'bg-white dark:bg-slate-900'
+                            : 'bg-slate-50/50 dark:bg-slate-800/35'
+                        } hover:bg-indigo-50/50 dark:hover:bg-slate-800`}
+                        onClick={() => setSelected(m.id)}
                       >
-                        {ROLE_LABEL[m.role] || m.role}
-                      </span>
-                    </td>
-
-                    <td className="px-1.5 py-4 text-center align-middle text-slate-700 dark:text-slate-300">
-                      {m.department_name || '—'}
-                    </td>
-
-                    <td className="px-1.5 py-4 text-center align-middle text-slate-700 dark:text-slate-300">
-                      {m.phone || '—'}
-                    </td>
-
-                    <td className="px-1.5 py-4 text-center align-middle">
-                      {pct === null ? (
-                        <span className="text-slate-400 dark:text-slate-500">
-                          No data
-                        </span>
-                      ) : (
-                        <div className="mx-auto flex max-w-28 items-center justify-center gap-1.5">
-                          <div className="flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full ${pctColor(pct)}`}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                          <span className="text-xs w-9 text-right text-slate-600 dark:text-slate-300">
-                            {pct}%
-                          </span>
-                        </div>
-                      )}
-                    </td>
-
-                    <td className="px-1.5 py-4 text-center align-middle [&>div]:justify-center">
-                      <RatingWithBadge value={m.rating ?? m.avg_rating} />
-                    </td>
-
-                    <td className="px-1.5 py-4 text-center align-middle text-slate-700 dark:text-slate-300">
-                      {m.verified_tasks}/{m.total_tasks}
-                    </td>
-
-                    <td className="px-1.5 py-4 text-center align-middle">
-                      {Number(m.pending_proofs) > 0 ? (
-                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-100 dark:border-amber-900/60">
-                          {m.pending_proofs} to verify
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 dark:text-slate-500">
-                          —
-                        </span>
-                      )}
-                    </td>
-
-                    <td className="px-1.5 py-4 text-center align-middle">
-                      {m.suspended ? (
-                        <span className="inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-100 dark:border-red-900/60">
-                          Suspended
-                        </span>
-                      ) : (
-                        <span
-                          className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                            STATUS_BADGE[m.internship_status] ||
-                            STATUS_BADGE.ACTIVE
+                        <td
+                          className={`sticky left-0 z-10 w-[260px] min-w-[260px] px-3 py-4 shadow-[8px_0_14px_-14px_rgba(15,23,42,0.7)] transition-colors ${
+                            index % 2 === 0
+                              ? 'bg-white group-hover:bg-indigo-50 dark:bg-[#1e293b] dark:group-hover:bg-[#263348]'
+                              : 'bg-[#f8fafc] group-hover:bg-indigo-50 dark:bg-[#1e293b] dark:group-hover:bg-[#263348]'
                           }`}
                         >
-                          {m.internship_status || 'ACTIVE'}
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                          <div className="flex min-w-0 items-center gap-3">
+                            <Avatar m={m} />
+
+                            <div className="min-w-0">
+                              <div className="truncate font-extrabold text-slate-900 dark:text-white">
+                                {m.full_name || '—'}
+                              </div>
+
+                              <div className="truncate text-xs text-slate-500 dark:text-slate-400">
+                                {m.email}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle">
+                          <span
+                            className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold whitespace-nowrap ${
+                              ROLE_BADGE[m.role] || ROLE_BADGE.INTERN
+                            }`}
+                          >
+                            {ROLE_LABEL[m.role] || m.role}
+                          </span>
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle text-slate-700 dark:text-slate-300">
+                          {m.department_name || '—'}
+                        </td>
+                        <td
+                          className="truncate px-1.5 py-4 text-center align-middle text-slate-700 dark:text-slate-300"
+                          title={m.internship_domain || undefined}
+                        >
+                          {m.internship_domain || '—'}
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle text-slate-700 dark:text-slate-300">
+                          {m.phone || '—'}
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle">
+                          {pct === null ? (
+                            <span className="text-slate-400 dark:text-slate-500">
+                              No data
+                            </span>
+                          ) : (
+                            <div className="mx-auto flex max-w-28 items-center justify-center gap-1.5">
+                              <div className="flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full ${pctColor(pct)}`}
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                              <span className="text-xs w-9 text-right text-slate-600 dark:text-slate-300">
+                                {pct}%
+                              </span>
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle [&>div]:justify-center">
+                          <RatingWithBadge value={m.rating ?? m.avg_rating} />
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle text-slate-700 dark:text-slate-300">
+                          {m.verified_tasks}/{m.total_tasks}
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle">
+                          {Number(m.pending_proofs) > 0 ? (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-100 dark:border-amber-900/60">
+                              {m.pending_proofs} to verify
+                            </span>
+                          ) : (
+                            <span
+                              className="font-bold tabular-nums text-slate-500 dark:text-slate-400"
+                              title="No submitted task proofs are awaiting verification"
+                            >
+                              0
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="px-1.5 py-4 text-center align-middle">
+                          {m.suspended ? (
+                            <span className="inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-100 dark:border-red-900/60">
+                              Suspended
+                            </span>
+                          ) : (
+                            <span
+                              className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                STATUS_BADGE[m.internship_status] ||
+                                STATUS_BADGE.ACTIVE
+                              }`}
+                            >
+                              {m.internship_status || 'ACTIVE'}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((m) => {
@@ -1828,10 +2135,11 @@ export default function Team() {
                     </span>
                   </div>
                 </div>
-
-                <div className="text-sm text-slate-600 dark:text-slate-300 space-y-1 mb-4">
+                <div className="mb-4 space-y-1 text-sm text-slate-600 dark:text-slate-300">
                   <p>📞 {m.phone || '—'}</p>
+                  <p>Domain: {m.internship_domain || '—'}</p>
                   <p>🎓 {m.college || '—'}</p>
+                  <p>🏢 {m.department_name || '—'}</p>
                 </div>
 
                 <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-slate-700 pt-3">
@@ -1852,6 +2160,26 @@ export default function Team() {
                       {m.verified_tasks}/{m.total_tasks}
                     </b>
                   </span>
+                </div>
+
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100 dark:border-slate-700">
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                      m.suspended
+                        ? STATUS_BADGE.TERMINATED
+                        : STATUS_BADGE[m.internship_status] ||
+                          STATUS_BADGE.ACTIVE
+                    }`}
+                  >
+                    {m.suspended
+                      ? 'Suspended'
+                      : m.internship_status || 'ACTIVE'}
+                  </span>
+                  {Number(m.pending_proofs) > 0 && (
+                    <span className="text-xs font-bold text-amber-700 dark:text-amber-300">
+                      {m.pending_proofs} pending
+                    </span>
+                  )}
                 </div>
               </div>
             );

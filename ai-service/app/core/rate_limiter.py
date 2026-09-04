@@ -79,4 +79,5 @@ class RateLimiter:
 
 
 ai_rate_limiter = RateLimiter()
-chat_rate_limiter = RateLimiter()
+# Backward-compatible alias so chat and other AI operations share the same limiter instance
+chat_rate_limiter = ai_rate_limiter

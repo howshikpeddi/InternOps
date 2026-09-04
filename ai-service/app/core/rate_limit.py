@@ -8,8 +8,7 @@ used by the AI chat endpoint.
 
 from fastapi import Depends, Request
 from .auth import User, get_current_user
-from .config import REDIS_URL
-from .rate_limiter import RateLimiter
+from .rate_limiter import RateLimiter, ai_rate_limiter, chat_rate_limiter
 
 def get_redis_client():
     from . import rate_limiter
@@ -28,7 +27,4 @@ async def enforce_rate_limit(
     await chat_rate_limiter.check_rate_limit(
         request=request,
         current_user=user,
-    )
-    
-ai_rate_limiter = RateLimiter()
-chat_rate_limiter = RateLimiter()
+    )

@@ -171,7 +171,7 @@ async function login(email, password, ip, userAgent) {
 
     // Notify admins about account lockout (fire-and-forget)
     notifyAdmin(
-      `🔒 Account Locked\nUser: ${email}\nIssue: Too many failed login attempts (${currentAttempts})\nTime: ${new Date().toLocaleString()}`
+      `Account Locked\nUser: ${email}\nIssue: Too many failed login attempts (${currentAttempts})\nTime: ${new Date().toLocaleString()}`
     ).catch(() => {});
 
     throw new UnauthorizedError(
@@ -188,7 +188,7 @@ async function login(email, password, ip, userAgent) {
     // Notify admins (fire-and-forget). Suspended users get a distinct message.
     const issueType = user?.suspended
       ? 'Account Suspended'
-      : 'Login Failed — User Not Found';
+      : 'Login Failed - User Not Found';
     notifyAdmin(
       `⚠️ User Issue: ${issueType}\nUser: ${email}\nTime: ${new Date().toLocaleString()}`
     ).catch(() => {});
@@ -236,7 +236,7 @@ async function refreshTokens(token, ip) {
 
   const hash = hashToken(token);
 
-  // Atomic claim — if two concurrent requests race, only one gets a userId back.
+  // Atomic claim - if two concurrent requests race, only one gets a userId back.
   // The second gets null and is rejected immediately, eliminating the TOCTOU window.
   const claimedUserId = await repo.claimRefreshToken(hash);
 
